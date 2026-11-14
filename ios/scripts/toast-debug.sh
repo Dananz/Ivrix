@@ -2,10 +2,11 @@
 # Present a toast inside a RUNNING cmux iOS DEBUG build on a simulator, with
 # no touch input (drives ToastDebugTrigger via defaults + a darwin
 # notification). DEBUG builds only; physical devices are not supported
-# (simctl spawn is simulator-only).
+# (simctl spawn is simulator-only). The simulator is a Simlock lease: pass its
+# UDID (scripts/simlock-udid.sh <device id from T3 device_open>).
 #
 # Usage:
-#   ios/scripts/toast-debug.sh --udid <udid> --bundle-id <id> \
+#   ios/scripts/toast-debug.sh --udid <simlock-udid> --bundle-id <id> \
 #     [--style info|success|warning|failure] [--title <t>] --message <m> \
 #     [--icon <sf-symbol>] [--bottom] [--persistent] [--action <label>] \
 #     [--key <coalescing-key>]
@@ -34,19 +35,28 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ -z "$UDID" || -z "$BUNDLE_ID" ]]; then
+if [[ -z "$BUNDLE_ID" ]]; then
+  echo "error: --udid and --bundle-id are required" >&2
+  exit 1
+fi
+
+# shellcheck source=../../scripts/lib/ios-simlock.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../../scripts/lib/ios-simlock.sh"
+if ! cmux_simlock_ci_default_set; then
+  cmux_simlock_require_udid "$UDID" --udid || exit $?
+elif [[ -z "$UDID" ]]; then
   echo "error: --udid and --bundle-id are required" >&2
   exit 1
 fi
 
 if [[ "$DISMISS_ALL" -eq 1 ]]; then
-  xcrun simctl spawn "$UDID" notifyutil -p dev.cmux.toast.debug.dismiss
+  cmux_simctl "$UDID" spawn "$UDID" notifyutil -p dev.cmux.toast.debug.dismiss
   echo "dismissed all toasts on $BUNDLE_ID"
   exit 0
 fi
 
 if [[ "$DEMO" -eq 1 ]]; then
-  xcrun simctl spawn "$UDID" notifyutil -p dev.cmux.toast.debug.demo
+  cmux_simctl "$UDID" spawn "$UDID" notifyutil -p dev.cmux.toast.debug.demo
   echo "started toast demo on $BUNDLE_ID"
   exit 0
 fi
@@ -70,6 +80,6 @@ EOF
 )"
 
 # -string: without it, defaults parses the JSON braces as a plist dictionary.
-xcrun simctl spawn "$UDID" defaults write "$BUNDLE_ID" cmux.debug.toast -string "$SPEC"
-xcrun simctl spawn "$UDID" notifyutil -p dev.cmux.toast.debug.present
+cmux_simctl "$UDID" spawn "$UDID" defaults write "$BUNDLE_ID" cmux.debug.toast -string "$SPEC"
+cmux_simctl "$UDID" spawn "$UDID" notifyutil -p dev.cmux.toast.debug.present
 echo "presented: $SPEC"

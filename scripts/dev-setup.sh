@@ -34,7 +34,8 @@
 #                       Accepts a comma-list to compose (e.g. composer,browser).
 #                       Run `scripts/dev-profiles/replay-cli.mjs --list` for names.
 #   --no-pair           skip enabling the host + minting + auto-pair.
-#   --simulator <name>  iOS simulator name (default "iPhone 17").
+#   --simulator-id <u>  Simlock simulator UDID (or IOS_SIMULATOR_ID); see ios/AGENTS.md.
+#   --simulator <name>  iOS simulator name, GitHub Actions only (default "iPhone 17").
 #   --device            target a connected iPhone instead of the simulator.
 #   --agent             use the shared agent account for both Mac and Simulator.
 #                       Physical iPhone dogfood always uses the personal profile.
@@ -47,9 +48,10 @@ PROFILE=""
 NO_PAIR=0
 AGENT=0
 SIMULATOR_NAME="iPhone 17"
+SIMULATOR_ID="${IOS_SIMULATOR_ID:-}"
 IOS_TARGET="simulator"   # simulator | device
 
-usage() { sed -n '2,40p' "$0"; }
+usage() { sed -n '2,41p' "$0"; }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -58,6 +60,7 @@ while [[ $# -gt 0 ]]; do
     --profile) PROFILE="${2:-}"; shift 2 ;;
     --no-pair) NO_PAIR=1; shift ;;
     --simulator) SIMULATOR_NAME="${2:-}"; shift 2 ;;
+    --simulator-id) SIMULATOR_ID="${2:-}"; shift 2 ;;
     --device) IOS_TARGET="device"; shift ;;
     --agent) AGENT=1; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -81,11 +84,18 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 PROFILE_REPLAY="$SCRIPT_DIR/dev-profiles/replay-cli.mjs"
 # shellcheck source=scripts/lib/mobile-attach.sh
 source "$SCRIPT_DIR/lib/mobile-attach.sh"
+# shellcheck source=scripts/lib/ios-simlock.sh
+source "$SCRIPT_DIR/lib/ios-simlock.sh"
 
 # Validate before loading credentials, enabling the host, or starting either
 # build. The shared validator also rejects the stable instance sentinel.
 if ! cmux_attach_validate_dev_tag "$TAG"; then
   exit 2
+fi
+
+# An iOS simulator surface needs a Simlock simulator; check before the Mac build.
+if [[ "$SURFACE" != "mac" && "$IOS_TARGET" == "simulator" ]] && ! cmux_simlock_ci_default_set; then
+  cmux_simlock_require_udid "$SIMULATOR_ID" --simulator-id || exit $?
 fi
 
 # --- profiles: validate up front (P3) ---------------------------------------
@@ -194,6 +204,7 @@ build_and_launch_ios() {
     # Build + install onto the SAME simulator mobile-dev-launch.sh launches on,
     # so the requested sim has the freshly built app (reload defaults to iPhone 17).
     ios_reload_args+=(--simulator "$SIMULATOR_NAME")
+    [[ -n "$SIMULATOR_ID" ]] && ios_reload_args+=(--simulator-id "$SIMULATOR_ID")
   fi
   "$REPO_ROOT/ios/scripts/reload.sh" "${ios_reload_args[@]}"
 
@@ -212,6 +223,7 @@ build_and_launch_ios() {
     mobile_launch_args+=(--device)
   else
     mobile_launch_args+=(--simulator "$SIMULATOR_NAME")
+    [[ -n "$SIMULATOR_ID" ]] && mobile_launch_args+=(--simulator-id "$SIMULATOR_ID")
   fi
   "$REPO_ROOT/scripts/mobile-dev-launch.sh" "${mobile_launch_args[@]}"
 }

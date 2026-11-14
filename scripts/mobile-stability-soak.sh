@@ -6,9 +6,15 @@ usage() {
 Usage:
   scripts/mobile-stability-soak.sh [--tag swmob] [--profile crash-finder|steady] [--seconds N]
 
+Simulators come from Simlock. Lease an iPhone and an iPad with T3 Code's
+device_open on the "Simlock" host, turn each device id into a UDID with
+scripts/simlock-udid.sh, and pass them with --iphone-sim/--ipad-sim or the
+variables below. Only GitHub Actions (no Simlock) auto-detects booted
+default-set simulators.
+
 Environment:
-  IPHONE_SIM_ID   Required if no booted iPhone simulator can be auto-detected.
-  IPAD_SIM_ID     Required if no booted iPad simulator can be auto-detected.
+  IPHONE_SIM_ID   Simlock UDID of the iPhone simulator (or --iphone-sim).
+  IPAD_SIM_ID     Simlock UDID of the iPad simulator (or --ipad-sim).
   SOAK_ROOT       Output directory. Defaults to /tmp/cmux-mobile-soak-<tag>-<profile>.
   CMUX_MOBILE_DEV_STACK_AUTH_TOKEN
                  DEBUG-only token used by simulator apps and the tagged Mac host.
@@ -101,11 +107,19 @@ raise SystemExit(1)
 PY
 }
 
-if [[ -z "$iphone_sim_id" ]]; then
-  iphone_sim_id="$(detect_booted_sim iphone || true)"
-fi
-if [[ -z "$ipad_sim_id" ]]; then
-  ipad_sim_id="$(detect_booted_sim ipad || true)"
+# shellcheck source=lib/ios-simlock.sh
+source "$script_dir/lib/ios-simlock.sh"
+
+if cmux_simlock_ci_default_set; then
+  if [[ -z "$iphone_sim_id" ]]; then
+    iphone_sim_id="$(detect_booted_sim iphone || true)"
+  fi
+  if [[ -z "$ipad_sim_id" ]]; then
+    ipad_sim_id="$(detect_booted_sim ipad || true)"
+  fi
+else
+  cmux_simlock_require_udid "$iphone_sim_id" --iphone-sim || exit $?
+  cmux_simlock_require_udid "$ipad_sim_id" --ipad-sim || exit $?
 fi
 
 if [[ -z "$iphone_sim_id" || -z "$ipad_sim_id" ]]; then
@@ -149,7 +163,7 @@ cleanup_tagged_soak_processes() {
     while IFS= read -r pid; do
       [[ "$pid" =~ ^[0-9]+$ ]] || continue
       kill "$pid" >/dev/null 2>&1 || true
-    done < <(ps -axo pid=,command= | awk -v sim="$sim_id" 'index($0, "cmux.app/cmux") && index($0, "/Devices/" sim "/") { print $1 }')
+    done < <(ps -axo pid=,command= | awk -v sim="$sim_id" 'index($0, "cmux.app/cmux") && (index($0, "/Devices/" sim "/") || index($0, "/" sim "/data/")) { print $1 }')
 
     while IFS= read -r pid; do
       [[ "$pid" =~ ^[0-9]+$ ]] || continue

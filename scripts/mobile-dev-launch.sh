@@ -13,8 +13,15 @@
 # agent profile unless their caller chooses a profile explicitly. No profile
 # can fall through to credentials belonging to another profile.
 #
+# Simulators come from Simlock: lease one with T3 Code's device_open on the
+# "Simlock" host, get its UDID with scripts/simlock-udid.sh <device id>, and
+# pass --simulator-id <UDID>. Every simctl call for it goes through
+# `simlock simctl`. Only GitHub Actions (no Simlock) may name a booted
+# default-set simulator with --simulator <name>.
+#
 # Usage:
-#   scripts/mobile-dev-launch.sh --tag grid [--simulator "iPhone 17"] [--attach|--no-attach] [--detach]
+#   scripts/mobile-dev-launch.sh --tag grid --simulator-id <simlock-udid> [--attach|--no-attach] [--detach]
+#              (IOS_SIMULATOR_ID works too)
 #   scripts/mobile-dev-launch.sh --tag grid --device [--device-id <id>] [--attach|--no-attach]
 #   scripts/mobile-dev-launch.sh --tag grid --agent  [--attach|--no-attach]
 #
@@ -74,7 +81,7 @@ cmux_mdl_notify() {
 TAG=""
 TARGET="simulator"          # simulator | device
 SIMULATOR_NAME="iPhone 17"
-SIMULATOR_ID=""             # exact booted sim UDID (wins over name when set)
+SIMULATOR_ID="${IOS_SIMULATOR_ID:-}"  # Simlock sim UDID (wins over name; name is CI-only)
 DEVICE_ID=""
 ATTACH=0
 ATTACH_EXPLICIT=0
@@ -94,7 +101,7 @@ ATTACH_MINT_MAX_ATTEMPTS="${CMUX_ATTACH_MINT_MAX_ATTEMPTS:-20}"
 # install unusable; callers can still tighten or extend it explicitly.
 ATTACH_READY_TIMEOUT_SECONDS="${CMUX_ATTACH_READY_TIMEOUT_SECONDS:-60}"
 
-usage() { sed -n '2,58p' "$0"; }
+usage() { sed -n '2,65p' "$0"; }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -219,6 +226,8 @@ REPO_ROOT="${CMUX_MOBILE_SOURCE_CHECKOUT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 source "$SCRIPT_DIR/lib/dev-secrets.sh"
 # shellcheck source=scripts/lib/mobile-attach.sh
 source "$SCRIPT_DIR/lib/mobile-attach.sh"
+# shellcheck source=scripts/lib/ios-simlock.sh
+source "$SCRIPT_DIR/lib/ios-simlock.sh"
 credential_args=(--profile "$AUTH_PROFILE")
 [[ -n "$AUTH_CREDENTIALS_FILE" ]] && credential_args+=(--credentials-file "$AUTH_CREDENTIALS_FILE")
 [[ -n "$EXPECTED_ACCOUNT" ]] && credential_args+=(--expected-account "$EXPECTED_ACCOUNT")
@@ -246,6 +255,12 @@ fi
 # --- bundle id (matches ios/scripts/reload.sh sanitize_tag) ------------------
 slug="$(cmux_attach__slug "$TAG")"
 BUNDLE_ID="dev.cmux.ios.$slug"
+
+# A simulator launch needs a booted Simlock simulator; check before the Mac or
+# the attach ticket is touched.
+if ! cmux_simlock_ci_default_set && [[ "$TARGET" == "simulator" ]]; then
+  cmux_simlock_require_udid "$SIMULATOR_ID" --simulator-id || exit $?
+fi
 
 # --- first (and only) device reachability probe -------------------------------
 # A phone that is offline on the FIRST probe defers delivery: notify, print the
@@ -376,11 +391,11 @@ if [[ "$TARGET" == "simulator" ]]; then
     SIM_UDID="$(xcrun simctl list devices booted 2>/dev/null | grep -F "$SIMULATOR_NAME" | grep -oE '[0-9A-F-]{36}' | head -1)"
   fi
   if [[ -z "$SIM_UDID" ]]; then
-    echo "error: simulator '${SIMULATOR_ID:-$SIMULATOR_NAME}' is not booted (boot it or pass --simulator <name>)" >&2
+    echo "error: simulator '${SIMULATOR_ID:-$SIMULATOR_NAME}' is not booted (pass --simulator-id <simlock-udid>)" >&2
     exit 1
   fi
   DOGFOOD_CLIENT_ID="$(cmux_attach_dogfood_client_id "$BUNDLE_ID" "$SIM_UDID")"
-  xcrun simctl terminate "$SIM_UDID" "$BUNDLE_ID" >/dev/null 2>&1 || true
+  cmux_simctl "$SIM_UDID" terminate "$SIM_UDID" "$BUNDLE_ID" >/dev/null 2>&1 || true
   SIMULATOR_DEVICE_ID="$(
     cmux_attach_seed_simulator_device_id "$SIM_UDID" "$BUNDLE_ID"
   )"
@@ -404,7 +419,7 @@ if [[ "$TARGET" == "simulator" ]]; then
   SIMCTL_CHILD_CMUX_IROH_RELEASE_GATE_SCENARIO="${CMUX_IROH_RELEASE_GATE_SCENARIO:-standard}" \
   SIMCTL_CHILD_CMUX_IROH_SOAK_PROFILE="${CMUX_IROH_SOAK_PROFILE:-}" \
   SIMCTL_CHILD_CMUX_IROH_DISABLE_RELAY_CREDENTIAL_REFRESH="${CMUX_IROH_DISABLE_RELAY_CREDENTIAL_REFRESH:-0}" \
-    xcrun simctl "${launch_args[@]}" "$SIM_UDID" "$BUNDLE_ID"
+    cmux_simctl "$SIM_UDID" "${launch_args[@]}" "$SIM_UDID" "$BUNDLE_ID"
 else
   if [[ -z "$DEVICE_ID" ]]; then
     DEVICE_ID="$(xcrun devicectl list devices 2>/dev/null \

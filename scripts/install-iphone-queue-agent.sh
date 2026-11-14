@@ -65,6 +65,7 @@ cmd_install() {
       "$SCRIPT_DIR/ios-device-process.sh" \
       "$SCRIPT_DIR/mobile-dev-launch.sh" \
       "$SCRIPT_DIR/lib/dev-secrets.sh" \
+      "$SCRIPT_DIR/lib/ios-simlock.sh" \
       "$SCRIPT_DIR/lib/mobile-attach.sh"; do
     [[ -f "$required" ]] || { echo "error: missing queue control-plane file: $required" >&2; exit 1; }
   done
@@ -75,6 +76,7 @@ cmd_install() {
   install -m 0755 "$SCRIPT_DIR/ios-device-process.sh" "$QUEUE_DIR/bin/ios-device-process.sh"
   install -m 0755 "$SCRIPT_DIR/mobile-dev-launch.sh" "$QUEUE_DIR/bin/mobile-dev-launch.sh"
   install -m 0644 "$SCRIPT_DIR/lib/dev-secrets.sh" "$QUEUE_DIR/bin/lib/dev-secrets.sh"
+  install -m 0644 "$SCRIPT_DIR/lib/ios-simlock.sh" "$QUEUE_DIR/bin/lib/ios-simlock.sh"
   install -m 0644 "$SCRIPT_DIR/lib/mobile-attach.sh" "$QUEUE_DIR/bin/lib/mobile-attach.sh"
 
   # idVendor 1452 = 0x05AC (Apple). Matching any Apple USB device is fine: the

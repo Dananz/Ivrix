@@ -117,7 +117,7 @@ The helper refuses to run without `CMUX_TAG`, targets `/tmp/cmux-debug-<tag>.soc
 
 Rules that only matter in one part of the tree live next to that code. Read the file before working there; not every agent loads a nested file on its own when launched from the repository root.
 
-- `ios/`, `Packages/iOS/`: `ios/AGENTS.md` (Apple HIG rule, iPhone install and auth gates, iOS and verification capacity on the controller, cross-tag Mac access, dev auth profiles).
+- `ios/`, `Packages/iOS/`: `ios/AGENTS.md` (simulators leased from Simlock, never from Xcode's default set; Apple HIG rule, iPhone install and auth gates, iOS and verification capacity on the controller, cross-tag Mac access, dev auth profiles).
 - `web/` and any cmux Cloud database work: `web/AGENTS.md` (database provider).
 - `cmux-tui/`: `cmux-tui/AGENTS.md` (hosted verification, Blacksmith Testbox).
 

@@ -1,6 +1,6 @@
 # irx soak runbook (tag irx)
 
-One tagged Mac + one isolated simulator, relay-only, 15 minutes engaged.
+One tagged Mac + one Simlock simulator, relay-only, 15 minutes engaged.
 
 ## Mac (host)
 
@@ -21,16 +21,21 @@ tail -f /tmp/cmux-irx-journal-mac-irx.jsonl
 
 ## Simulator (client)
 
+Lease an iOS simulator with T3 Code's `device_open` on the "Simlock" host, then
+install the tagged iOS app on it (`ios/scripts/reload.sh --simulator-id` or
+`scripts/ios-sim-install.sh --simulator-id`).
+
 ```bash
+UDID="$(scripts/simlock-udid.sh <device id from device_open>)"
 SIMCTL_CHILD_CMUX_IRX_ENABLED=1 \
 SIMCTL_CHILD_CMUX_IRX_FORCE_RELAY=1 \
 scripts/mobile-dev-launch.sh --tag irx --agent --ensure-mac \
-  --simulator "cmux-dev-irx"
+  --simulator-id "$UDID"
 ```
 
 The sim app registers its own irx binding, mints a pair grant against the
 Mac's binding on first dial, and connects relay-only. Journal:
-`simctl get_app_container <udid> <bundle> data` + `Documents/irx-journal.jsonl`.
+`simlock simctl get_app_container <udid> <bundle> data` + `Documents/irx-journal.jsonl`.
 
 ## Soak
 
@@ -39,5 +44,8 @@ python3 scripts/irx-soak.py --tag irx --udid <udid> --bundle-id <ios-bundle> \
   --minutes 15
 ```
 
+The harness reaches the Simlock simulator through `simlock simctl`; its `idb`
+typing addresses Xcode's default device set only, so pass `--no-input` on a
+Simlock simulator.
 Open a workspace with a terminal on the phone first; the harness types `date`
 every ~30s and screenshots every 60s. PASS criteria are in the script header.

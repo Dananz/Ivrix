@@ -3,10 +3,10 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Usage: ios/scripts/reload.sh --tag <tag> [--simulator <name>] [--simulator-id <id>] [--no-launch]
-       ios/scripts/reload.sh --tag <tag> --device [--device-id <id>] [--device-name <name>] [--team <team-id>] [--no-launch]
+Usage: ios/scripts/reload.sh --tag <tag> --simulator-id <simlock-udid> [--no-launch]
+       ios/scripts/reload.sh --tag <tag> --simulator-id <simlock-udid> --device [--device-id <id>] [--device-name <name>] [--team <team-id>] [--no-launch]
        ios/scripts/reload.sh --tag <tag> --device-only [--device-id <id>] [--device-name <name>] [--team <team-id>] [--no-launch]
-       ios/scripts/reload.sh --tag <tag> --simulator-only
+       ios/scripts/reload.sh --tag <tag> --simulator-id <simlock-udid> --simulator-only
 
 Build, install, and launch the cmux iOS app with an isolated tag.
 
@@ -16,8 +16,16 @@ enabled automatically; --simulator-only opts out explicitly. Without a
 configured default, this reloads only the simulator unless --device is given.
 If the iPhone is unreachable, the signed build is parked in the offline install
 queue (scripts/iphone-install-queue.sh) and auto-installs when the phone
-reconnects. Unless a simulator is named explicitly, the simulator leg uses the
-tag's own isolated device ("cmux-dev-<slug>"), created on demand.
+reconnects.
+
+The simulator leg runs on a simulator leased from Simlock, never on one from
+Xcode's default device set. Lease one with T3 Code's device_open on the
+"Simlock" host, turn its device id into a UDID with scripts/simlock-udid.sh,
+and pass --simulator-id <UDID> (or IOS_SIMULATOR_ID). Without one, the reload
+exits before building; --device-only skips the simulator leg. Every simctl call
+for the leased simulator goes through `simlock simctl`. On GitHub Actions,
+which has no Simlock, --simulator <name> and the per-tag "cmux-dev-<slug>"
+simulator still work.
 
 When a trusted phone leg is enabled, the simulator app is installed but not
 launched. The simulator's agent auto-pair would replace the phone's personal
@@ -344,6 +352,8 @@ fi
 # sanitize_tag call below.
 # shellcheck source=../../scripts/lib/mobile-attach.sh
 source "$IOS_DIR/../scripts/lib/mobile-attach.sh"
+# shellcheck source=../../scripts/lib/ios-simlock.sh
+source "$IOS_DIR/../scripts/lib/ios-simlock.sh"
 # Fail before building if the tag would collide with a fallback/reserved identity
 # or exceed the cloud presence limit.
 if ! cmux_attach_validate_dev_tag "$TAG"; then
@@ -389,10 +399,22 @@ if [[ "$RELOAD_DEVICE" -eq 1 && "$PROD_AUTH" -eq 0 ]] \
   exit 2
 fi
 
-# Isolated per-tag simulator by default: unless the caller explicitly picked a
-# simulator (flag or IOS_SIMULATOR_NAME/IOS_SIMULATOR_ID), resolve or create
-# "cmux-dev-<slug>" so concurrent agent sessions never share a simulator.
-if [[ "$RELOAD_SIMULATOR" -eq 1 && "$SIMULATOR_EXPLICIT" -eq 0 ]]; then
+# The simulator leg needs a booted Simlock simulator. Check it before any build
+# work, so a missing lease costs nothing.
+if [[ "$RELOAD_SIMULATOR" -eq 1 ]] && ! cmux_simlock_ci_default_set; then
+  simlock_status=0
+  cmux_simlock_require_udid "$SIMULATOR_ID" --simulator-id || simlock_status=$?
+  if [[ "$simlock_status" -ne 0 ]]; then
+    echo "To build only for the iPhone, pass --device-only instead." >&2
+    exit "$simlock_status"
+  fi
+  SIMULATOR_NAME="Simlock simulator"
+fi
+
+# GitHub Actions only (no Simlock there): isolated per-tag simulator by default.
+# Unless the caller explicitly picked a simulator (flag or
+# IOS_SIMULATOR_NAME/IOS_SIMULATOR_ID), resolve or create "cmux-dev-<slug>".
+if [[ "$RELOAD_SIMULATOR" -eq 1 && "$SIMULATOR_EXPLICIT" -eq 0 ]] && cmux_simlock_ci_default_set; then
   # shellcheck source=../../scripts/lib/ios-sim-isolate.sh
   source "$IOS_DIR/../scripts/lib/ios-sim-isolate.sh"
   SIMULATOR_ID="$(cmux_ios_isolated_sim_udid "$TAG_SLUG")"
@@ -400,9 +422,13 @@ if [[ "$RELOAD_SIMULATOR" -eq 1 && "$SIMULATOR_EXPLICIT" -eq 0 ]]; then
   SIMULATOR_NAME="$(cmux_ios_isolated_sim_name "$TAG_SLUG")"
 fi
 
-DESTINATION="platform=iOS Simulator,name=$SIMULATOR_NAME"
-if [[ -n "$SIMULATOR_ID" ]]; then
-  DESTINATION="platform=iOS Simulator,id=$SIMULATOR_ID"
+if cmux_simlock_is_udid "$SIMULATOR_ID"; then
+  cmux_simlock_xcodebuild_destination "$SIMULATOR_ID"
+  DESTINATION_ARGS=("${CMUX_SIMLOCK_DESTINATION_ARGS[@]}")
+elif [[ -n "$SIMULATOR_ID" ]]; then
+  DESTINATION_ARGS=(-destination "platform=iOS Simulator,id=$SIMULATOR_ID")
+else
+  DESTINATION_ARGS=(-destination "platform=iOS Simulator,name=$SIMULATOR_NAME")
 fi
 MOBILE_DEV_LAUNCH="$IOS_DIR/../scripts/mobile-dev-launch.sh"
 DEVICE_PROCESS_HELPER="$IOS_DIR/../scripts/ios-device-process.sh"
@@ -756,7 +782,7 @@ reload_simulator() {
     -workspace "$WORKSPACE" \
     -scheme "$SCHEME" \
     -configuration Debug \
-    -destination "$DESTINATION" \
+    "${DESTINATION_ARGS[@]}" \
     -derivedDataPath "$DERIVED_DATA" \
     ${IROH_RELAY_POLICY_BUILD_ARGS[@]+"${IROH_RELAY_POLICY_BUILD_ARGS[@]}"} \
     CMUX_APP_BUNDLE_IDENTIFIER="$BUNDLE_ID" \
@@ -804,13 +830,15 @@ PY
     )"
   fi
 
-  xcrun simctl boot "$SIM_ID" >/dev/null 2>&1 || true
-  xcrun simctl install "$SIM_ID" "$APP_PATH"
+  if ! cmux_simlock_is_udid "$SIM_ID"; then
+    xcrun simctl boot "$SIM_ID" >/dev/null 2>&1 || true
+  fi
+  cmux_simctl "$SIM_ID" install "$SIM_ID" "$APP_PATH"
 
   if [[ "$LAUNCH" -eq 1 && "$SIMULATOR_LAUNCH" -eq 1 ]]; then
-    xcrun simctl terminate "$SIM_ID" "$BUNDLE_ID" >/dev/null 2>&1 || true
+    cmux_simctl "$SIM_ID" terminate "$SIM_ID" "$BUNDLE_ID" >/dev/null 2>&1 || true
     if [[ "$NO_SETUP" -eq 1 || "$NO_SIGN_IN" -eq 1 ]]; then
-      xcrun simctl launch "$SIM_ID" "$BUNDLE_ID" >/dev/null
+      cmux_simctl "$SIM_ID" launch "$SIM_ID" "$BUNDLE_ID" >/dev/null
     elif ! auto_setup_launch simulator "$SIM_ID"; then
       echo "error: installed $BUNDLE_ID, but signed setup failed; refusing an unpaired fallback launch" >&2
       echo "error: repair the tagged Mac/Iroh route, or pass --no-attach, --no-sign-in, or --no-setup explicitly" >&2

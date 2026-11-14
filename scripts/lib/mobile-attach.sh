@@ -91,6 +91,18 @@ cmux_attach_mac_bundle_id() {
   printf 'com.cmuxterm.app.debug.%s' "$(cmux_attach__bundle_seg "$1")"
 }
 
+# simctl for one simulator: a Simlock simulator lives in Simlock's own device
+# set, which plain `xcrun simctl` cannot see, so it goes through `simlock simctl`.
+cmux_attach__simctl() {
+  local udid="${1:?simulator id is required}"
+  shift
+  if [[ -d "${SIMLOCK_IOS_DEVICE_SET:-$HOME/.simlock/devices/ios}/$udid" ]]; then
+    simlock simctl "$@"
+  else
+    xcrun simctl "$@"
+  fi
+}
+
 # Unsigned Simulator apps have no application-identifier entitlement, so iOS
 # rejects their Keychain reads. Produce a deterministic per-bundle UUID for the
 # simulator-only authoritative identity store. The launcher passes it directly
@@ -109,7 +121,7 @@ bundle_id = os.environ["CMUX_SIMULATOR_BUNDLE_ID"]
 print(uuid.uuid5(uuid.NAMESPACE_URL, f"cmux-ios-simulator-device:{bundle_id}"))
 PY
 )"
-  xcrun simctl spawn "$simulator_id" defaults write \
+  cmux_attach__simctl "$simulator_id" spawn "$simulator_id" defaults write \
     "$bundle_id" cmux.deviceRegistry.iosDeviceID -string "$device_id"
   printf '%s' "$device_id"
 }
@@ -348,7 +360,7 @@ if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
 cmux_attach_installed_bundle_metadata() {
   local target="$1" target_id="$2" bundle_id="$3" app_path="${CMUX_INSTALLED_APP_PATH:-}"
   if [[ -z "$app_path" && "$target" == "simulator_injection" ]]; then
-    app_path="$(xcrun simctl get_app_container "$target_id" "$bundle_id" app 2>/dev/null || true)"
+    app_path="$(cmux_attach__simctl "$target_id" get_app_container "$target_id" "$bundle_id" app 2>/dev/null || true)"
   fi
   CMUX_INSTALLED_TARGET="$target" \
   CMUX_INSTALLED_TARGET_ID="$target_id" \

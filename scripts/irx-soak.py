@@ -37,6 +37,7 @@ Verdict (written to <out>/<stamp>/verdict.json):
 import argparse
 import hashlib
 import json
+import os
 import pathlib
 import subprocess
 import sys
@@ -53,6 +54,11 @@ parser.add_argument("--no-input", action="store_true",
 parser.add_argument("--idb-companion", default=None)
 args = parser.parse_args()
 
+# A Simlock simulator lives in Simlock's own device set, which plain
+# `xcrun simctl` cannot see.
+SIMLOCK_IOS_SET = pathlib.Path(os.environ.get("SIMLOCK_IOS_DEVICE_SET") or pathlib.Path.home() / ".simlock" / "devices" / "ios")
+SIMCTL = ["simlock", "simctl"] if (SIMLOCK_IOS_SET / args.udid).is_dir() else ["xcrun", "simctl"]
+
 round_dir = pathlib.Path(args.out) / time.strftime("%Y%m%d-%H%M%S")
 round_dir.mkdir(parents=True, exist_ok=True)
 mac_journal_path = pathlib.Path(f"/tmp/cmux-irx-journal-mac-{args.tag}.jsonl")
@@ -61,7 +67,7 @@ mac_journal_path = pathlib.Path(f"/tmp/cmux-irx-journal-mac-{args.tag}.jsonl")
 def sim_journal_path():
     try:
         container = subprocess.check_output(
-            ["xcrun", "simctl", "get_app_container", args.udid, args.bundle_id, "data"],
+            [*SIMCTL, "get_app_container", args.udid, args.bundle_id, "data"],
             text=True).strip()
         return pathlib.Path(container) / "Documents" / "irx-journal.jsonl"
     except subprocess.CalledProcessError:
@@ -85,7 +91,7 @@ def read_events(path, since_index):
 def screenshot(label):
     out = round_dir / f"shot-{label}.png"
     subprocess.run(
-        ["xcrun", "simctl", "io", args.udid, "screenshot", str(out)],
+        [*SIMCTL, "io", args.udid, "screenshot", str(out)],
         capture_output=True)
     if out.exists():
         return hashlib.sha256(out.read_bytes()).hexdigest()

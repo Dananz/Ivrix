@@ -20,6 +20,44 @@ function run(command, args, extraEnv = {}) {
   });
 }
 
+// A fake Simlock device set holding one booted simulator, with xcrun and
+// simlock stubs on PATH, so launcher tests take the Simlock path offline.
+function fakeSimlockEnv(tempRoot, callLog) {
+  const binDir = path.join(tempRoot, "simlock-bin");
+  const simlockSet = path.join(tempRoot, "simlock-ios");
+  const udid = "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA";
+  fs.mkdirSync(binDir, { recursive: true });
+  fs.mkdirSync(path.join(simlockSet, udid), { recursive: true });
+  fs.writeFileSync(
+    path.join(binDir, "simlock"),
+    '#!/bin/bash\nprintf "simlock %s\\n" "$*" >> "$CMUX_TEST_CALL_LOG"\nexit 0\n',
+    { mode: 0o755 },
+  );
+  fs.writeFileSync(
+    path.join(binDir, "xcrun"),
+    [
+      "#!/bin/bash",
+      'if [[ "$1 $2 $4 $5 $6" == "simctl --set list devices booted" ]]; then',
+      `  printf '{"devices":{"r":[{"udid":"${udid}","state":"Booted"}]}}'`,
+      "  exit 0",
+      "fi",
+      'printf "xcrun %s\\n" "$*" >> "$CMUX_TEST_CALL_LOG"',
+      "exit 0",
+      "",
+    ].join("\n"),
+    { mode: 0o755 },
+  );
+  return {
+    udid,
+    env: {
+      PATH: `${binDir}:${process.env.PATH}`,
+      CMUX_TEST_CALL_LOG: callLog,
+      SIMLOCK_IOS_DEVICE_SET: simlockSet,
+      GITHUB_ACTIONS: "",
+    },
+  };
+}
+
 function validate(tag) {
   return run("bash", [
     "-c",
@@ -862,8 +900,8 @@ test("simulator launch seeds a deterministic durable device id before app launch
   const seedEnvironment = simulatorBranch.indexOf(
     'SIMCTL_CHILD_CMUX_SIMULATOR_DEVICE_ID="$SIMULATOR_DEVICE_ID"',
   );
-  const terminate = simulatorBranch.indexOf('xcrun simctl terminate');
-  const launch = simulatorBranch.indexOf('xcrun simctl "${launch_args[@]}"');
+  const terminate = simulatorBranch.indexOf('cmux_simctl "$SIM_UDID" terminate');
+  const launch = simulatorBranch.indexOf('cmux_simctl "$SIM_UDID" "${launch_args[@]}"');
 
   assert.notEqual(terminate, -1, "existing simulator app must terminate before seeding");
   assert.notEqual(seed, -1, "simulator launch must seed the durable identity mirror");
@@ -937,7 +975,15 @@ test("ensure-mac fails closed before a simulator can launch unpaired", () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "cmux-ensure-mac-test-"));
   const binDir = path.join(tempRoot, "bin");
   const xcrunLog = path.join(tempRoot, "xcrun.log");
+  const simlockSet = path.join(tempRoot, "simlock-ios");
+  const udid = "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA";
   fs.mkdirSync(binDir);
+  fs.mkdirSync(path.join(simlockSet, udid), { recursive: true });
+  fs.writeFileSync(
+    path.join(binDir, "simlock"),
+    '#!/bin/bash\nprintf "simlock %s\\n" "$*" >> "$CMUX_TEST_XCRUN_LOG"\nexit 0\n',
+    { mode: 0o755 },
+  );
   fs.mkdirSync(path.join(tempRoot, ".secrets"));
   fs.writeFileSync(
     path.join(tempRoot, ".secrets/cmuxterm-dev.env"),
@@ -953,8 +999,8 @@ test("ensure-mac fails closed before a simulator can launch unpaired", () => {
     path.join(binDir, "xcrun"),
     [
       "#!/bin/bash",
-      'if [[ "$*" == "simctl list devices booted" ]]; then',
-      '  printf "iPhone 17 (AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA) (Booted)\\n"',
+      'if [[ "$1 $2 $4 $5 $6" == "simctl --set list devices booted" ]]; then',
+      `  printf '{"devices":{"r":[{"udid":"${udid}","state":"Booted"}]}}'`,
       "  exit 0",
       "fi",
       'printf "%s\\n" "$*" >> "$CMUX_TEST_XCRUN_LOG"',
@@ -971,8 +1017,8 @@ test("ensure-mac fails closed before a simulator can launch unpaired", () => {
         "scripts/mobile-dev-launch.sh",
         "--tag",
         `ensure-missing-${process.pid}`,
-        "--simulator",
-        "iPhone 17",
+        "--simulator-id",
+        udid,
         "--ensure-mac",
         "--detach",
         "--agent",
@@ -981,6 +1027,8 @@ test("ensure-mac fails closed before a simulator can launch unpaired", () => {
         HOME: tempRoot,
         PATH: `${binDir}:${process.env.PATH}`,
         CMUX_TEST_XCRUN_LOG: xcrunLog,
+        SIMLOCK_IOS_DEVICE_SET: simlockSet,
+        GITHUB_ACTIONS: "",
       },
     );
 
@@ -988,6 +1036,62 @@ test("ensure-mac fails closed before a simulator can launch unpaired", () => {
     assert.match(result.stderr, /could not prepare tagged Mac.*auto-pair/i);
     const calls = fs.existsSync(xcrunLog) ? fs.readFileSync(xcrunLog, "utf8") : "";
     assert.doesNotMatch(calls, /simctl launch/);
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("simulator launch without a Simlock UDID prints the lease steps and touches nothing", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "cmux-simlock-missing-test-"));
+  const binDir = path.join(tempRoot, "bin");
+  const callLog = path.join(tempRoot, "calls.log");
+  fs.mkdirSync(binDir);
+  fs.mkdirSync(path.join(tempRoot, ".secrets"));
+  fs.mkdirSync(path.join(tempRoot, "simlock-ios"));
+  fs.writeFileSync(
+    path.join(tempRoot, ".secrets/cmuxterm-dev.env"),
+    "CMUX_UITEST_STACK_EMAIL=agent@example.com\nCMUX_UITEST_STACK_PASSWORD=test-password\n",
+    { mode: 0o600 },
+  );
+  for (const tool of ["xcrun", "simlock", "defaults"]) {
+    fs.writeFileSync(
+      path.join(binDir, tool),
+      `#!/bin/bash\nprintf "${tool} %s\\n" "$*" >> "$CMUX_TEST_CALL_LOG"\nexit 0\n`,
+      { mode: 0o755 },
+    );
+  }
+  const env = {
+    HOME: tempRoot,
+    PATH: `${binDir}:${process.env.PATH}`,
+    CMUX_TEST_CALL_LOG: callLog,
+    SIMLOCK_IOS_DEVICE_SET: path.join(tempRoot, "simlock-ios"),
+    GITHUB_ACTIONS: "",
+  };
+
+  try {
+    for (const extra of [
+      ["--simulator", "iPhone 17"],
+      ["--simulator-id", "BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB"],
+    ]) {
+      const result = run(
+        "bash",
+        [
+          "scripts/mobile-dev-launch.sh",
+          "--tag",
+          `simlock-missing-${process.pid}`,
+          ...extra,
+          "--ensure-mac",
+          "--detach",
+          "--agent",
+        ],
+        env,
+      );
+      assert.equal(result.status, 2, `${extra.join(" ")}: ${result.stderr}`);
+      assert.match(result.stderr, /device_open/);
+      assert.match(result.stderr, /simlock-udid\.sh/);
+      const calls = fs.existsSync(callLog) ? fs.readFileSync(callLog, "utf8") : "";
+      assert.doesNotMatch(calls, /simctl (boot|launch|install|terminate|spawn)/);
+    }
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }
@@ -1021,7 +1125,7 @@ test("release gate builds and installs on its exact isolated simulator", () => {
   assert.match(iosReload, /--simulator-id\)/);
   assert.match(
     iosReload,
-    /DESTINATION="platform=iOS Simulator,id=\$SIMULATOR_ID"/,
+    /DESTINATION_ARGS=\(-destination "platform=iOS Simulator,id=\$SIMULATOR_ID"\)/,
   );
   assert.match(targets, /--simulator-id "\$simulator_id"/);
   assert.match(gate, /iroh_release_gate_set_ios_reload_args/);
@@ -1091,18 +1195,19 @@ test("physical-route attach reports a missing tagged Mac before blaming Iroh", (
     "CMUX_UITEST_STACK_EMAIL=agent@example.com\nCMUX_UITEST_STACK_PASSWORD=test-password\n",
     { mode: 0o600 },
   );
+  const simlock = fakeSimlockEnv(tempRoot, path.join(tempRoot, "calls.log"));
   const result = run("bash", [
     "scripts/mobile-dev-launch.sh",
     "--tag",
     tag,
-    "--simulator",
-    "iPhone 17",
+    "--simulator-id",
+    simlock.udid,
     "--attach",
     "--agent",
     "--detach",
     "--iroh-release-gate",
     "automatic",
-  ], { HOME: tempRoot });
+  ], { HOME: tempRoot, ...simlock.env });
   fs.rmSync(tempRoot, { recursive: true, force: true });
 
   assert.notEqual(result.status, 0);

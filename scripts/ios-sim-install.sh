@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# Install a PREBUILT cmux iOS simulator .app into the tag's isolated simulator
-# and launch it signed in + auto-paired. Used by cloud iOS reloads
-# (cmuxterm-hq scripts/reload-cloud-ios.sh), which download the simulator app
-# instead of building it locally; local builds go through ios/scripts/reload.sh,
-# which shares the same isolated-simulator resolution.
+# Install a PREBUILT cmux iOS simulator .app into a Simlock simulator and
+# launch it signed in + auto-paired. Lease the simulator with T3 Code's
+# device_open on the "Simlock" host; scripts/simlock-udid.sh turns its device id
+# into the UDID. Only GitHub Actions (no Simlock) falls back to the tag's own
+# default-set simulator "cmux-dev-<slug>".
 #
 #   scripts/ios-sim-install.sh --tag <tag> --app <Debug-iphonesimulator/cmux.app>
+#                              --simulator-id <simlock-udid>
 #                              [--auth-profile agent|personal]
 #                              [--expected-account <email>]
 #                              [--credentials-file <path>]
@@ -15,11 +16,12 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/mobile-attach.sh
 source "$SCRIPT_DIR/lib/mobile-attach.sh"
-# shellcheck source=lib/ios-sim-isolate.sh
-source "$SCRIPT_DIR/lib/ios-sim-isolate.sh"
+# shellcheck source=lib/ios-simlock.sh
+source "$SCRIPT_DIR/lib/ios-simlock.sh"
 
 TAG=""
 APP=""
+SIM_UDID="${IOS_SIMULATOR_ID:-}"
 NO_ATTACH=0
 NO_SIGN_IN=0
 NO_SETUP=0
@@ -32,6 +34,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --tag) TAG="${2:-}"; shift 2 ;;
     --app) APP="${2:-}"; shift 2 ;;
+    --simulator-id) SIM_UDID="${2:-}"; shift 2 ;;
     --auth-profile) AUTH_PROFILE="${2:-}"; shift 2 ;;
     --expected-account) EXPECTED_ACCOUNT="${2:-}"; shift 2 ;;
     --credentials-file) AUTH_CREDENTIALS_FILE="${2:-}"; shift 2 ;;
@@ -39,7 +42,7 @@ while [[ $# -gt 0 ]]; do
     --no-sign-in) NO_SIGN_IN=1; shift ;;
     --no-setup) NO_SETUP=1; shift ;;
     --no-launch) LAUNCH=0; shift ;;
-    -h|--help) sed -n '2,12p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,13p' "$0"; exit 0 ;;
     *) echo "error: unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -61,18 +64,27 @@ if [[ "$APP_BUNDLE_ID" != "$BUNDLE_ID" ]]; then
   exit 1
 fi
 
-SIM_UDID="$(cmux_ios_isolated_sim_udid "$SLUG")"
-[[ -n "$SIM_UDID" ]] || { echo "error: could not resolve isolated simulator" >&2; exit 1; }
-SIM_NAME="$(cmux_ios_isolated_sim_name "$SLUG")"
+if cmux_simlock_ci_default_set && [[ -z "$SIM_UDID" ]]; then
+  # shellcheck source=lib/ios-sim-isolate.sh
+  source "$SCRIPT_DIR/lib/ios-sim-isolate.sh"
+  SIM_UDID="$(cmux_ios_isolated_sim_udid "$SLUG")"
+  [[ -n "$SIM_UDID" ]] || { echo "error: could not resolve isolated simulator" >&2; exit 1; }
+  SIM_NAME="$(cmux_ios_isolated_sim_name "$SLUG")"
+  xcrun simctl boot "$SIM_UDID" >/dev/null 2>&1 || true
+elif cmux_simlock_ci_default_set && ! cmux_simlock_is_udid "$SIM_UDID"; then
+  SIM_NAME="simulator"
+else
+  cmux_simlock_require_udid "$SIM_UDID" --simulator-id || exit $?
+  SIM_NAME="Simlock simulator"
+fi
 
-echo "==> installing $BUNDLE_ID into isolated simulator $SIM_NAME ($SIM_UDID)"
-xcrun simctl boot "$SIM_UDID" >/dev/null 2>&1 || true
-xcrun simctl install "$SIM_UDID" "$APP"
+echo "==> installing $BUNDLE_ID into $SIM_NAME ($SIM_UDID)"
+cmux_simctl "$SIM_UDID" install "$SIM_UDID" "$APP"
 
 if [[ "$LAUNCH" -eq 1 ]]; then
-  xcrun simctl terminate "$SIM_UDID" "$BUNDLE_ID" >/dev/null 2>&1 || true
+  cmux_simctl "$SIM_UDID" terminate "$SIM_UDID" "$BUNDLE_ID" >/dev/null 2>&1 || true
   if [[ "$NO_SETUP" -eq 1 || "$NO_SIGN_IN" -eq 1 ]]; then
-    xcrun simctl launch "$SIM_UDID" "$BUNDLE_ID" >/dev/null
+    cmux_simctl "$SIM_UDID" launch "$SIM_UDID" "$BUNDLE_ID" >/dev/null
   else
     launch_args=(--tag "$TAG" --simulator-id "$SIM_UDID" --detach)
     launch_args+=(--auth-profile "$AUTH_PROFILE")

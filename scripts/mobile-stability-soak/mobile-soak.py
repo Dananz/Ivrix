@@ -18,6 +18,10 @@ tag = os.environ.get("CMUX_TAG", "swmob")
 bundle_id = os.environ.get("MOBILE_APP_BUNDLE_ID", f"dev.cmux.ios.{tag}").strip()
 repo = Path(os.environ.get("CMUX_REPO", Path(__file__).resolve().parents[2]))
 simulator_id = os.environ["SIMULATOR_ID"]
+# A Simlock simulator lives in Simlock's own device set, which plain
+# `xcrun simctl` cannot see.
+simlock_ios_set = Path(os.environ.get("SIMLOCK_IOS_DEVICE_SET") or Path.home() / ".simlock" / "devices" / "ios")
+SIMCTL = ["simlock", "simctl"] if (simlock_ios_set / simulator_id).is_dir() else ["xcrun", "simctl"]
 client_id = os.environ.get("CLIENT_ID", "mobile-soak-cli")
 duration_seconds = int(os.environ.get("SOAK_SECONDS", str(12 * 60 * 60)))
 soak_root = Path(os.environ.get("SOAK_ROOT", f"/tmp/cmux-mobile-soak-{tag}"))
@@ -199,9 +203,9 @@ def create_ticket(workspace_id=None):
 
 
 def launch_app_with_attach_ticket(ticket):
-    run(["xcrun", "simctl", "terminate", simulator_id, bundle_id], cwd=Path("/"), check=False)
+    run([*SIMCTL, "terminate", simulator_id, bundle_id], cwd=Path("/"), check=False)
     launch_output = run(
-        ["xcrun", "simctl", "launch", "--terminate-running-process", simulator_id, bundle_id],
+        [*SIMCTL, "launch", "--terminate-running-process", simulator_id, bundle_id],
         cwd=Path("/"),
         extra_env={
             "SIMCTL_CHILD_CMUX_UITEST_MOCK_DATA": "1",
@@ -225,7 +229,7 @@ def reattach_app_with_attach_ticket(ticket):
         raise RuntimeError(f"unsupported MOBILE_REATTACH_MODE={reattach_mode!r}")
 
     output = run(
-        ["xcrun", "simctl", "openurl", simulator_id, ticket["attach_url"]],
+        [*SIMCTL, "openurl", simulator_id, ticket["attach_url"]],
         cwd=Path("/"),
     ).strip()
     log(f"app_openurl ticket_workspace={ticket['workspace_id'][:8]} output={output}")
@@ -260,7 +264,7 @@ def capture_attachment_fallback_screenshot():
     screenshot_command_path = fallback_root / f"{client_id}-{int(time.time())}-screenshot-command.json"
     copied = fallback_root / f"{client_id}-{int(time.time())}.png"
     if shutil.which("xcodebuildmcp") is None:
-        run(["xcrun", "simctl", "io", simulator_id, "screenshot", "--type=png", str(copied)], cwd=Path("/"))
+        run([*SIMCTL, "io", simulator_id, "screenshot", "--type=png", str(copied)], cwd=Path("/"))
     else:
         screenshot_output = run_json_file(
             [
@@ -549,7 +553,7 @@ def send_color_probe(ticket, terminal_id, iteration):
         counts = ""
         attempts = max(1, color_verify_attempts)
         for attempt in range(1, attempts + 1):
-            run(["xcrun", "simctl", "io", simulator_id, "screenshot", "--type=png", str(shot)], cwd=Path("/"))
+            run([*SIMCTL, "io", simulator_id, "screenshot", "--type=png", str(shot)], cwd=Path("/"))
             try:
                 counts = run(["swift", str(color_verify_script), str(shot)], cwd=Path("/")).strip()
                 break
@@ -720,7 +724,7 @@ def main():
                 check_color_probe(ticket, terminal_id, iterations)
             elif screenshot_interval > 0 and iterations % screenshot_interval == 0:
                 shot = soak_root / f"{client_id}-{iterations}.png"
-                run(["xcrun", "simctl", "io", simulator_id, "screenshot", "--type=png", str(shot)], cwd=Path("/"))
+                run([*SIMCTL, "io", simulator_id, "screenshot", "--type=png", str(shot)], cwd=Path("/"))
 
             log(
                 "ok "

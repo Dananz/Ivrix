@@ -52,6 +52,11 @@ parser.add_argument("--out", default="/tmp/listauth-gates")
 parser.add_argument("--no-input", action="store_true")
 args = parser.parse_args()
 
+# A Simlock simulator lives in Simlock's own device set, which plain
+# `xcrun simctl` cannot see.
+SIMLOCK_IOS_SET = pathlib.Path(os.environ.get("SIMLOCK_IOS_DEVICE_SET") or pathlib.Path.home() / ".simlock" / "devices" / "ios")
+SIMCTL = ["simlock", "simctl"] if (SIMLOCK_IOS_SET / args.udid).is_dir() else ["xcrun", "simctl"]
+
 def signin_env():
     """Sim UITEST sign-in is per-launch; every launch needs the agent-profile
     credentials injected or the app lands signed out (dev-env artifact, not a
@@ -75,7 +80,7 @@ def signin_env():
 
 
 def launch_app():
-    subprocess.run(["xcrun", "simctl", "launch", args.udid, args.bundle_id],
+    subprocess.run([*SIMCTL, "launch", args.udid, args.bundle_id],
                    capture_output=True, env=signin_env())
 
 
@@ -88,7 +93,7 @@ mac_journal_path = pathlib.Path(f"/tmp/cmux-irx-journal-mac-{args.tag}.jsonl")
 def sim_journal_path():
     try:
         container = subprocess.check_output(
-            ["xcrun", "simctl", "get_app_container", args.udid, args.bundle_id, "data"],
+            [*SIMCTL, "get_app_container", args.udid, args.bundle_id, "data"],
             text=True).strip()
         return pathlib.Path(container) / "Documents" / "irx-journal.jsonl"
     except subprocess.CalledProcessError:
@@ -118,7 +123,7 @@ def wall_of(event):
 
 def screenshot(label):
     out = round_dir / f"shot-{label}.png"
-    subprocess.run(["xcrun", "simctl", "io", args.udid, "screenshot", str(out)],
+    subprocess.run([*SIMCTL, "io", args.udid, "screenshot", str(out)],
                    capture_output=True)
     return hashlib.sha256(out.read_bytes()).hexdigest() if out.exists() else None
 
@@ -210,7 +215,7 @@ def gate_cold():
     failures = []
     wanted = {("admission", "admitted"), ("control-plane", "directory")}
     for trial in range(args.trials):
-        subprocess.run(["xcrun", "simctl", "terminate", args.udid, args.bundle_id],
+        subprocess.run([*SIMCTL, "terminate", args.udid, args.bundle_id],
                        capture_output=True)
         time.sleep(3)
         t_launch = time.time()
@@ -237,7 +242,7 @@ def gate_cold():
 
 def gate_background():
     # Push the app to background by foregrounding Settings, hold, relaunch.
-    subprocess.run(["xcrun", "simctl", "launch", args.udid, "com.apple.Preferences"],
+    subprocess.run([*SIMCTL, "launch", args.udid, "com.apple.Preferences"],
                    capture_output=True)
     print(f"[gates] app backgrounded; holding {args.minutes} minutes")
     time.sleep(args.minutes * 60)
